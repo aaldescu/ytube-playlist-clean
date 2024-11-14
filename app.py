@@ -14,17 +14,6 @@ SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
 API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
 
-def create_credentials():
-    """Create credentials object from secrets"""
-    credentials = google.oauth2.credentials.Credentials(
-        token=None,
-        client_id=st.secrets["client_id"],
-        client_secret=st.secrets["client_secret"],
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES
-    )
-    return credentials
-
 def get_authorization_url():
     """Get the authorization URL for OAuth2"""
     flow = google_auth_oauthlib.flow.Flow.from_client_config(
@@ -34,6 +23,7 @@ def get_authorization_url():
                 "client_secret": st.secrets["client_secret"],
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [st.secrets["redirect_uri"]]
             }
         },
         scopes=SCOPES
@@ -43,7 +33,8 @@ def get_authorization_url():
     
     authorization_url, state = flow.authorization_url(
         access_type='offline',
-        include_granted_scopes='true'
+        include_granted_scopes='true',
+        prompt='consent'  # Force to get refresh_token
     )
     
     return authorization_url, state
@@ -67,12 +58,20 @@ def get_playlists(youtube):
     
     return playlists
 
+def create_youtube_client(credentials):
+    """Create YouTube API client from credentials"""
+    return googleapiclient.discovery.build(
+        API_SERVICE_NAME, API_VERSION, credentials=credentials
+    )
+
 def main():
     st.title("YouTube Playlists Viewer")
     
     # Initialize session state
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
+    if 'credentials' not in st.session_state:
+        st.session_state.credentials = None
     
     if not st.session_state.authenticated:
         if 'code' not in st.experimental_get_query_params():
@@ -88,48 +87,82 @@ def main():
                             "client_secret": st.secrets["client_secret"],
                             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                             "token_uri": "https://oauth2.googleapis.com/token",
+                            "redirect_uris": [st.secrets["redirect_uri"]]
                         }
                     },
                     scopes=SCOPES
                 )
                 flow.redirect_uri = st.secrets["redirect_uri"]
                 flow.fetch_token(code=code)
+                
+                # Get credentials and store them
                 credentials = flow.credentials
+                st.session_state.credentials = {
+                    'token': credentials.token,
+                    'refresh_token': credentials.refresh_token,
+                    'token_uri': credentials.token_uri,
+                    'client_id': credentials.client_id,
+                    'client_secret': credentials.client_secret,
+                    'scopes': credentials.scopes
+                }
                 
-                # Create YouTube API client
-                youtube = googleapiclient.discovery.build(
-                    API_SERVICE_NAME, API_VERSION, credentials=credentials)
-                
-                st.session_state.youtube = youtube
                 st.session_state.authenticated = True
-                st.rerun()  # Changed from experimental_rerun() to rerun()
+                st.rerun()
                 
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                st.error(f"An error occurred during authentication: {str(e)}")
     
     else:
         try:
-            # Get playlists
-            playlists = get_playlists(st.session_state.youtube)
-            
-            # Create dropdown
-            playlist_titles = [playlist['title'] for playlist in playlists]
-            selected_playlist = st.selectbox(
-                "Select a playlist:",
-                playlist_titles
+            # Recreate credentials object
+            credentials = google.oauth2.credentials.Credentials(
+                token=st.session_state.credentials['token'],
+                refresh_token=st.session_state.credentials['refresh_token'],
+                token_uri=st.session_state.credentials['token_uri'],
+                client_id=st.session_state.credentials['client_id'],
+                client_secret=st.session_state.credentials['client_secret'],
+                scopes=st.session_state.credentials['scopes']
             )
             
-            # Display selected playlist info
-            if selected_playlist:
-                selected_playlist_id = next(
-                    playlist['id'] for playlist in playlists 
-                    if playlist['title'] == selected_playlist
+            # Create YouTube API client
+            youtube = create_youtube_client(credentials)
+            
+            # Get playlists
+            playlists = get_playlists(youtube)
+            
+            # Update stored credentials if they were refreshed
+            if credentials.token != st.session_state.credentials['token']:
+                st.session_state.credentials['token'] = credentials.token
+            
+            # Create dropdown
+            if playlists:
+                playlist_titles = [playlist['title'] for playlist in playlists]
+                selected_playlist = st.selectbox(
+                    "Select a playlist:",
+                    playlist_titles
                 )
-                st.write(f"Selected playlist ID: {selected_playlist_id}")
+                
+                # Display selected playlist info
+                if selected_playlist:
+                    selected_playlist_id = next(
+                        playlist['id'] for playlist in playlists 
+                        if playlist['title'] == selected_playlist
+                    )
+                    st.write(f"Selected playlist ID: {selected_playlist_id}")
+            else:
+                st.write("No playlists found.")
+            
+            # Add logout button
+            if st.button("Logout"):
+                st.session_state.authenticated = False
+                st.session_state.credentials = None
+                st.rerun()
             
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
             st.session_state.authenticated = False
+            st.session_state.credentials = None
+            st.rerun()
 
 if __name__ == "__main__":
     main()
