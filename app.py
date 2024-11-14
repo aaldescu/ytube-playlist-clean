@@ -102,7 +102,7 @@ def main():
                 
                 st.session_state.youtube = youtube
                 st.session_state.authenticated = True
-                st.experimental_rerun()
+                st.rerun()  # Changed from experimental_rerun() to rerun()
                 
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
