@@ -68,7 +68,14 @@ def main():
     query_params = st.experimental_get_query_params()
     
     # Debug information
-    st.write("Debug - Current URL parameters:", query_params)
+    with st.expander("Debug Information"):
+        st.write("Current URL parameters:", query_params)
+        st.write("Session State Contents:")
+        for key, value in st.session_state.items():
+            if key in ['youtube', 'credentials']:
+                st.write(f"{key}: <object>")
+            else:
+                st.write(f"{key}: {value}")
     
     if not st.session_state.authenticated:
         if 'code' not in query_params:
@@ -82,6 +89,12 @@ def main():
         else:
             try:
                 code = query_params['code'][0]
+                received_state = query_params.get('state', [None])[0]
+                
+                # Verify state
+                if 'state' in st.session_state and received_state != st.session_state.state:
+                    st.error("State mismatch. Possible security issue.")
+                    raise ValueError("State mismatch")
                 
                 # Create flow
                 flow = google_auth_oauthlib.flow.Flow.from_client_config(
