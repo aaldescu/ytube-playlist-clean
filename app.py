@@ -64,6 +64,10 @@ def main():
     # Initialize session state
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
+    if 'credentials' not in st.session_state:
+        st.session_state.credentials = None
+    if 'youtube' not in st.session_state:
+        st.session_state.youtube = None
     
     query_params = st.experimental_get_query_params()
     
@@ -77,73 +81,75 @@ def main():
             else:
                 st.write(f"{key}: {value}")
     
-    if not st.session_state.authenticated:
-        if 'code' not in query_params:
-            try:
-                authorization_url, state = get_authorization_url()
-                st.markdown(f"Please click [here]({authorization_url}) to authorize the application.")
-                # Store state for verification
-                st.session_state.state = state
-            except Exception as e:
-                st.error(f"Error generating authorization URL: {str(e)}")
-        else:
-            try:
-                code = query_params['code'][0]
-                received_state = query_params.get('state', [None])[0]
-                
-                # Verify state
-                if 'state' in st.session_state and received_state != st.session_state.state:
-                    st.error("State mismatch. Possible security issue.")
-                    raise ValueError("State mismatch")
-                
-                # Create flow
-                flow = google_auth_oauthlib.flow.Flow.from_client_config(
-                    {
-                        "web": {
-                            "client_id": st.secrets["client_id"],
-                            "client_secret": st.secrets["client_secret"],
-                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                            "token_uri": "https://oauth2.googleapis.com/token",
-                            "redirect_uris": [st.secrets["redirect_uri"]]
-                        }
-                    },
-                    scopes=SCOPES
-                )
-                flow.redirect_uri = st.secrets["redirect_uri"]
-                
-                # Exchange the authorization code for credentials
-                flow.fetch_token(
-                    code=code,
-                    client_secret=st.secrets["client_secret"],
-                )
-                
-                # Get credentials
-                credentials = flow.credentials
-                
-                # Create YouTube API client
-                youtube = googleapiclient.discovery.build(
-                    API_SERVICE_NAME, API_VERSION, credentials=credentials
-                )
-                
-                # Store in session state
-                st.session_state.youtube = youtube
-                st.session_state.credentials = credentials
-                st.session_state.authenticated = True
-                
-                # Clear URL parameters and refresh
+    # Handle OAuth callback
+    if not st.session_state.authenticated and 'code' in query_params:
+        try:
+            code = query_params['code'][0]
+            received_state = query_params.get('state', [None])[0]
+            
+            # Verify state
+            if 'state' in st.session_state and received_state != st.session_state.state:
+                st.error("State mismatch. Possible security issue.")
+                raise ValueError("State mismatch")
+            
+            # Create flow
+            flow = google_auth_oauthlib.flow.Flow.from_client_config(
+                {
+                    "web": {
+                        "client_id": st.secrets["client_id"],
+                        "client_secret": st.secrets["client_secret"],
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                        "redirect_uris": [st.secrets["redirect_uri"]]
+                    }
+                },
+                scopes=SCOPES
+            )
+            flow.redirect_uri = st.secrets["redirect_uri"]
+            
+            # Exchange the authorization code for credentials
+            flow.fetch_token(
+                code=code,
+                client_secret=st.secrets["client_secret"],
+            )
+            
+            # Get credentials
+            credentials = flow.credentials
+            
+            # Create YouTube API client
+            youtube = googleapiclient.discovery.build(
+                API_SERVICE_NAME, API_VERSION, credentials=credentials
+            )
+            
+            # Update session state
+            st.session_state.update({
+                'authenticated': True,
+                'credentials': credentials,
+                'youtube': youtube
+            })
+            
+            # Clear URL parameters
+            st.experimental_set_query_params()
+            
+        except Exception as e:
+            st.error(f"Authentication error: {str(e)}")
+            if st.button("Try Again"):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
                 st.experimental_set_query_params()
                 st.rerun()
-                
-            except Exception as e:
-                st.error(f"Authentication error: {str(e)}")
-                st.write("Debug - Authorization code:", code)
-                if st.button("Try Again"):
-                    for key in list(st.session_state.keys()):
-                        del st.session_state[key]
-                    st.experimental_set_query_params()
-                    st.rerun()
     
-    else:
+    # Show authorization URL if not authenticated
+    if not st.session_state.authenticated:
+        try:
+            authorization_url, state = get_authorization_url()
+            st.markdown(f"Please click [here]({authorization_url}) to authorize the application.")
+            st.session_state.state = state
+        except Exception as e:
+            st.error(f"Error generating authorization URL: {str(e)}")
+    
+    # Show playlists if authenticated
+    if st.session_state.authenticated and st.session_state.youtube:
         try:
             # Get playlists
             playlists = get_playlists(st.session_state.youtube)
