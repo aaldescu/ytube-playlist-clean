@@ -5,6 +5,9 @@ import google_auth_oauthlib.flow
 import googleapiclient.discovery
 import os
 from urllib.parse import urlencode
+import json
+import pickle
+from pathlib import Path
 
 # Streamlit config
 st.set_page_config(page_title="YouTube Playlists", page_icon="▶️")
@@ -13,6 +16,37 @@ st.set_page_config(page_title="YouTube Playlists", page_icon="▶️")
 SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
 API_SERVICE_NAME = 'youtube'
 API_VERSION = 'v3'
+CREDENTIALS_FILE = '.credentials/youtube_credentials.pickle'
+
+def ensure_credentials_dir():
+    """Ensure the credentials directory exists"""
+    Path('.credentials').mkdir(exist_ok=True)
+
+def save_credentials(credentials):
+    """Save credentials to file"""
+    ensure_credentials_dir()
+    with open(CREDENTIALS_FILE, 'wb') as f:
+        pickle.dump(credentials_to_dict(credentials), f)
+
+def load_credentials():
+    """Load credentials from file"""
+    try:
+        with open(CREDENTIALS_FILE, 'rb') as f:
+            credentials_dict = pickle.load(f)
+            return google.oauth2.credentials.Credentials(**credentials_dict)
+    except (FileNotFoundError, EOFError):
+        return None
+
+def credentials_to_dict(credentials):
+    """Convert credentials to dictionary"""
+    return {
+        'token': credentials.token,
+        'refresh_token': credentials.refresh_token,
+        'token_uri': credentials.token_uri,
+        'client_id': credentials.client_id,
+        'client_secret': credentials.client_secret,
+        'scopes': credentials.scopes
+    }
 
 def get_authorization_url():
     """Get the authorization URL for OAuth2"""
@@ -58,6 +92,16 @@ def get_playlists(youtube):
     
     return playlists
 
+def initialize_youtube_client(credentials):
+    """Initialize YouTube client with credentials"""
+    try:
+        return googleapiclient.discovery.build(
+            API_SERVICE_NAME, API_VERSION, credentials=credentials
+        )
+    except Exception as e:
+        st.error(f"Error initializing YouTube client: {str(e)}")
+        return None
+
 def main():
     st.title("YouTube Playlists Viewer")
     
@@ -68,6 +112,31 @@ def main():
         st.session_state.credentials = None
     if 'youtube' not in st.session_state:
         st.session_state.youtube = None
+    
+    # Try to load credentials if not authenticated
+    if not st.session_state.authenticated:
+        credentials = load_credentials()
+        if credentials and credentials.valid:
+            youtube = initialize_youtube_client(credentials)
+            if youtube:
+                st.session_state.update({
+                    'authenticated': True,
+                    'credentials': credentials,
+                    'youtube': youtube
+                })
+        elif credentials and credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(google.auth.transport.requests.Request())
+                youtube = initialize_youtube_client(credentials)
+                if youtube:
+                    st.session_state.update({
+                        'authenticated': True,
+                        'credentials': credentials,
+                        'youtube': youtube
+                    })
+                    save_credentials(credentials)
+            except Exception as e:
+                st.error(f"Error refreshing credentials: {str(e)}")
     
     query_params = st.experimental_get_query_params()
     
@@ -87,12 +156,10 @@ def main():
             code = query_params['code'][0]
             received_state = query_params.get('state', [None])[0]
             
-            # Verify state
             if 'state' in st.session_state and received_state != st.session_state.state:
                 st.error("State mismatch. Possible security issue.")
                 raise ValueError("State mismatch")
             
-            # Create flow
             flow = google_auth_oauthlib.flow.Flow.from_client_config(
                 {
                     "web": {
@@ -107,28 +174,22 @@ def main():
             )
             flow.redirect_uri = st.secrets["redirect_uri"]
             
-            # Exchange the authorization code for credentials
             flow.fetch_token(
                 code=code,
                 client_secret=st.secrets["client_secret"],
             )
             
-            # Get credentials
             credentials = flow.credentials
+            youtube = initialize_youtube_client(credentials)
             
-            # Create YouTube API client
-            youtube = googleapiclient.discovery.build(
-                API_SERVICE_NAME, API_VERSION, credentials=credentials
-            )
+            if youtube:
+                st.session_state.update({
+                    'authenticated': True,
+                    'credentials': credentials,
+                    'youtube': youtube
+                })
+                save_credentials(credentials)
             
-            # Update session state
-            st.session_state.update({
-                'authenticated': True,
-                'credentials': credentials,
-                'youtube': youtube
-            })
-            
-            # Clear URL parameters
             st.experimental_set_query_params()
             
         except Exception as e:
@@ -151,10 +212,8 @@ def main():
     # Show playlists if authenticated
     if st.session_state.authenticated and st.session_state.youtube:
         try:
-            # Get playlists
             playlists = get_playlists(st.session_state.youtube)
             
-            # Create dropdown
             if playlists:
                 playlist_titles = [playlist['title'] for playlist in playlists]
                 selected_playlist = st.selectbox(
@@ -171,8 +230,12 @@ def main():
             else:
                 st.write("No playlists found.")
             
-            # Logout button
             if st.button("Logout"):
+                # Remove credentials file
+                if os.path.exists(CREDENTIALS_FILE):
+                    os.remove(CREDENTIALS_FILE)
+                
+                # Clear session state
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.experimental_set_query_params()
@@ -180,6 +243,11 @@ def main():
             
         except Exception as e:
             st.error(f"Error accessing YouTube API: {str(e)}")
+            # Remove credentials file
+            if os.path.exists(CREDENTIALS_FILE):
+                os.remove(CREDENTIALS_FILE)
+            
+            # Clear session state
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.experimental_set_query_params()
