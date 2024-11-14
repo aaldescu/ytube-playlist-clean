@@ -99,10 +99,9 @@ def main():
                 flow.redirect_uri = st.secrets["redirect_uri"]
                 
                 # Exchange the authorization code for credentials
-                token = flow.fetch_token(
-                    token_url="https://oauth2.googleapis.com/token",
+                flow.fetch_token(
+                    code=code,
                     client_secret=st.secrets["client_secret"],
-                    code=code
                 )
                 
                 # Get credentials
